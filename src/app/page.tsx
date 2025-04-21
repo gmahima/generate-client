@@ -51,9 +51,17 @@ export default function Home() {
           >
             Read our docs
           </a>
-          <Button variant="outline" className="w-full sm:w-auto">Shadcn Button</Button>
+          <Link href="/sign-in">
+            <Button variant="default" className="w-full sm:w-auto">Sign In</Button>
+          </Link>
+          <Link href="/sign-up">
+            <Button variant="outline" className="w-full sm:w-auto">Sign Up</Button>
+          </Link>
+          <Link href="/dashboard">
+            <Button variant="default" className="w-full sm:w-auto">Dashboard</Button>
+          </Link>
           <Link href="/supabase-example">
-            <Button variant="default" className="w-full sm:w-auto">Supabase Example</Button>
+            <Button variant="outline" className="w-full sm:w-auto">Supabase Example</Button>
           </Link>
         </div>
       </main>

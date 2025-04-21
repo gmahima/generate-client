@@ -4,44 +4,69 @@ import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import Link from 'next/link'
+import { useUser } from '@clerk/nextjs'
 
 interface TableRow {
   [key: string]: string | number | boolean | object | null
 }
 
 export default function SupabaseExample() {
+  const { user, isLoaded } = useUser()
   const [data, setData] = useState<TableRow[]>([])
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
 
   useEffect(() => {
-    // Example of fetching data from Supabase
-    async function fetchData() {
-      try {
-        setLoading(true)
-        
-        // Replace 'your_table' with your actual table name
-        const { data, error } = await supabase
-          .from('your_table')
-          .select('*')
-          .limit(10)
-        
-        if (error) {
-          throw error
-        }
-        
-        setData(data || [])
-        setMessage('Connected to Supabase successfully!')
-      } catch (error: unknown) {
-        console.error('Error fetching data:', error)
-        setMessage('Error connecting to Supabase. Check your console for details.')
-      } finally {
-        setLoading(false)
-      }
+    // Only fetch data if user is authenticated
+    if (isLoaded && user) {
+      fetchData()
+    } else if (isLoaded && !user) {
+      setMessage('Please sign in to view Supabase data')
+      setLoading(false)
     }
+  }, [isLoaded, user])
 
-    fetchData()
-  }, [])
+  // Example of fetching data from Supabase
+  async function fetchData() {
+    try {
+      setLoading(true)
+      
+      // Replace 'your_table' with your actual table name
+      // Include user_id filter to ensure data ownership
+      const { data, error } = await supabase
+        .from('your_table')
+        .select('*')
+        .eq('user_id', user?.id) // Filter by user ID for security
+        .limit(10)
+      
+      if (error) {
+        throw error
+      }
+      
+      setData(data || [])
+      setMessage('Connected to Supabase successfully!')
+    } catch (error: unknown) {
+      console.error('Error fetching data:', error)
+      setMessage('Error connecting to Supabase. Check your console for details.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Show auth message if not signed in
+  if (isLoaded && !user) {
+    return (
+      <div className="min-h-screen p-8 max-w-4xl mx-auto">
+        <h1 className="text-3xl font-bold mb-6">Supabase Example</h1>
+        <div className="p-4 border rounded-lg mb-6 bg-white dark:bg-slate-800">
+          <p className="text-red-500 mb-4">{message}</p>
+          <Link href="/sign-in">
+            <Button variant="default">Sign In</Button>
+          </Link>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen p-8 max-w-4xl mx-auto">

@@ -7,6 +7,10 @@ import "swagger-ui-react/swagger-ui.css";
 import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import yaml from "js-yaml";
+import { useSearchParams } from "next/navigation";
+import { supabase } from "@/lib/supabase";
+import { useUser } from "@clerk/nextjs";
+import Link from "next/link";
 
 // Import Monaco editor dynamically to avoid SSR issues
 const MonacoEditor = dynamic(
@@ -15,12 +19,18 @@ const MonacoEditor = dynamic(
 );
 
 export default function GenerateClientPage() {
+  const searchParams = useSearchParams();
+  const specId = searchParams.get("specId");
+  const { user, isLoaded } = useUser();
+  
   const [spec, setSpec] = useState<string | null>(null);
   const [specObj, setSpecObj] = useState<Record<string, unknown> | null>(null);
   const [generatedClient, setGeneratedClient] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingSpec, setIsLoadingSpec] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [apiKey, setApiKey] = useState<string | null>(null);
+  const [projectId, setProjectId] = useState<string | null>(null);
 
   // Fetch the API key from environment variables
   useEffect(() => {
@@ -30,6 +40,58 @@ export default function GenerateClientPage() {
       setApiKey(envApiKey);
     }
   }, []);
+
+  // Fetch the specification if specId is provided
+  useEffect(() => {
+    if (specId && isLoaded && user) {
+      fetchSpecification(specId);
+    }
+  }, [specId, isLoaded, user]);
+
+  const fetchSpecification = async (id: string) => {
+    setIsLoadingSpec(true);
+    setError(null);
+    
+    try {
+      // Fetch the specification
+      const { data: specData, error: specError } = await supabase
+        .from("specifications")
+        .select("*, projects:project_id(id, name, user_id)")
+        .eq("id", id)
+        .single();
+        
+      if (specError) throw specError;
+      
+      // Check if the user owns this specification
+      if (specData.projects.user_id !== user?.id) {
+        setError("You don't have access to this specification");
+        return;
+      }
+      
+      setProjectId(specData.project_id);
+      setSpec(specData.file_content);
+      
+      try {
+        // Try parsing as JSON first
+        let parsedSpec: Record<string, unknown>;
+        try {
+          parsedSpec = JSON.parse(specData.file_content);
+        } catch {
+          // Try parsing as YAML
+          parsedSpec = yaml.load(specData.file_content) as Record<string, unknown>;
+        }
+        setSpecObj(parsedSpec);
+      } catch (parseError) {
+        console.error("Failed to parse specification:", parseError);
+        setError("Invalid specification format");
+      }
+    } catch (error) {
+      console.error("Error fetching specification:", error);
+      setError("Failed to load specification");
+    } finally {
+      setIsLoadingSpec(false);
+    }
+  };
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     setError(null);
@@ -140,33 +202,52 @@ export default function GenerateClientPage() {
     }
   };
 
+  if (isLoadingSpec) {
+    return (
+      <div className="container mx-auto p-6">
+        <h1 className="text-3xl font-bold mb-6">Generate API Client</h1>
+        <div className="text-center py-8">Loading specification...</div>
+      </div>
+    );
+  }
+
   return (
     <div className="container mx-auto p-6">
       <h1 className="text-3xl font-bold mb-6">Generate API Client</h1>
       
-      <div className="mb-6">
-        <div
-          {...getRootProps()}
-          className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
-            isDragActive
-              ? "border-blue-500 bg-blue-50"
-              : "border-gray-300 hover:border-blue-400"
-          }`}
-        >
-          <input {...getInputProps()} />
-          {isDragActive ? (
-            <p>Drop the OpenAPI specification file here...</p>
-          ) : (
-            <p>
-              Drag & drop an OpenAPI 3 (Swagger) specification file here, or
-              click to select a file
-            </p>
-          )}
-          <p className="text-sm text-gray-500 mt-2">
-            Accepts JSON or YAML files
-          </p>
+      {projectId && (
+        <div className="mb-4">
+          <Link href={`/projects/${projectId}`} className="text-blue-500 hover:underline">
+            &larr; Back to Project
+          </Link>
         </div>
-      </div>
+      )}
+      
+      {!specId && (
+        <div className="mb-6">
+          <div
+            {...getRootProps()}
+            className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+              isDragActive
+                ? "border-blue-500 bg-blue-50"
+                : "border-gray-300 hover:border-blue-400"
+            }`}
+          >
+            <input {...getInputProps()} />
+            {isDragActive ? (
+              <p>Drop the OpenAPI specification file here...</p>
+            ) : (
+              <p>
+                Drag & drop an OpenAPI 3 (Swagger) specification file here, or
+                click to select a file
+              </p>
+            )}
+            <p className="text-sm text-gray-500 mt-2">
+              Accepts JSON or YAML files
+            </p>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="mb-6 p-4 bg-red-100 text-red-700 rounded-lg">

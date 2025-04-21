@@ -1,37 +1,38 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { Button } from "./ui/button";
+import { UserButton, SignedIn, SignedOut } from "@clerk/nextjs";
 
-export default function Navigation() {
-  const pathname = usePathname();
-
-  const isActive = (path: string) => {
-    return pathname === path;
-  };
-
+export function Navigation() {
   return (
-    <nav className="flex space-x-4 mb-8 p-4 border-b">
-      <Link 
-        href="/" 
-        className={`px-3 py-2 rounded-md ${
-          isActive("/") 
-            ? "bg-blue-100 text-blue-700 font-medium" 
-            : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
-        }`}
-      >
-        Home
-      </Link>
-      <Link 
-        href="/generate-client" 
-        className={`px-3 py-2 rounded-md ${
-          isActive("/generate-client") 
-            ? "bg-blue-100 text-blue-700 font-medium" 
-            : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
-        }`}
-      >
-        Generate API Client
-      </Link>
+    <nav className="w-full py-4 border-b border-gray-200 bg-white dark:bg-black">
+      <div className="container mx-auto flex items-center justify-between">
+        <Link href="/" className="font-bold text-xl">
+          Generate Client
+        </Link>
+        
+        <div className="flex items-center gap-4">
+          <SignedIn>
+            <Link href="/dashboard">
+              <Button variant="outline">Dashboard</Button>
+            </Link>
+            <Link href="/projects">
+              <Button variant="outline">Projects</Button>
+            </Link>
+            <UserButton afterSignOutUrl="/" />
+          </SignedIn>
+          
+          <SignedOut>
+            <Link href="/sign-in">
+              <Button variant="outline">Sign In</Button>
+            </Link>
+            <Link href="/sign-up">
+              <Button variant="default">Sign Up</Button>
+            </Link>
+          </SignedOut>
+        </div>
+      </div>
     </nav>
   );
 } 
