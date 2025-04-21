@@ -8,8 +8,9 @@ import { supabase } from "@/lib/supabase";
 import { useDropzone } from "react-dropzone";
 import Link from "next/link";
 import yaml from "js-yaml";
-import dynamic from "next/dynamic";
 import SimpleApiPreview from '@/components/SimpleApiPreview';
+import ApiSpecDiff from '@/components/ApiSpecDiff';
+import dynamic from "next/dynamic";
 
 // Import Monaco editor dynamically to avoid SSR issues
 const MonacoEditor = dynamic(
@@ -81,6 +82,22 @@ export default function ProjectDetailPage() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState(false);
+  
+  // Client generation states
+  const [generatingClient, setGeneratingClient] = useState(false);
+  const [generatedClient, setGeneratedClient] = useState<string | null>(null);
+  const [previousClient, setPreviousClient] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState<string | null>(null);
+  const [showClientDiff, setShowClientDiff] = useState<boolean>(false);
+  
+  // Fetch the API key from environment variables
+  useEffect(() => {
+    // In production, this should be set on the server or in .env.local
+    const envApiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+    if (envApiKey) {
+      setApiKey(envApiKey);
+    }
+  }, []);
   
   // Add test function
   const testDirectInsert = async () => {
@@ -400,6 +417,95 @@ export default function ProjectDetailPage() {
     }
   }, [specObj]);
   
+  // Add client generation function
+  const generateClient = async () => {
+    if (!currentSpec) {
+      setError("No API specification available");
+      return;
+    }
+
+    if (!apiKey) {
+      setError("Gemini API key is not configured. Please set NEXT_PUBLIC_GEMINI_API_KEY in environment variables.");
+      return;
+    }
+
+    setGeneratingClient(true);
+    setError(null);
+
+    try {
+      // If we have a previous client, save it before generating a new one
+      if (generatedClient) {
+        setPreviousClient(generatedClient);
+      }
+      
+      let prompt;
+      
+      if (previousSpec && currentSpec) {
+        // If we have a previous spec, use a diff-based prompt
+        prompt = `Generate a JavaScript client library for the following OpenAPI specification.
+        The client should provide functions for all the endpoints defined in the spec.
+
+        I have a previous version of the API specification and need to update the client code
+        based on the changes.
+        
+        Here's the previous API specification:
+        ${previousSpec.file_content}
+        
+        Here's the new API specification:
+        ${currentSpec.file_content}
+        
+        Please focus on updating only the parts affected by the changes between these spec versions.
+        Format the output as JavaScript code only, with detailed comments for each function.`;
+      } else {
+        // Regular prompt for first-time generation
+        prompt = `Generate a JavaScript client library for the following OpenAPI specification. 
+        The client should provide functions for all the endpoints defined in the spec.
+        Format the output as JavaScript code only, with detailed comments for each function.
+        Here's the OpenAPI specification:
+        ${currentSpec.file_content}`;
+      }
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [{ text: prompt }],
+              },
+            ],
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      // Extract the generated text from the response
+      if (data.candidates && data.candidates[0]?.content?.parts?.length > 0) {
+        const generatedText = data.candidates[0].content.parts[0].text;
+        // Extract only the code part if there's any explanation
+        const codeMatch = generatedText.match(/\`\`\`(?:javascript|js)([\s\S]*?)\`\`\`/);
+        setGeneratedClient(codeMatch ? codeMatch[1].trim() : generatedText);
+        // Automatically show the client when generated
+        setShowClientDiff(true);
+      } else {
+        throw new Error("Invalid response format from the API");
+      }
+    } catch (error) {
+      console.error("Error generating client:", error);
+      setError(`Failed to generate client: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setGeneratingClient(false);
+    }
+  };
+  
   if (!isLoaded || loading) {
     return <div>Loading...</div>;
   }
@@ -471,7 +577,7 @@ export default function ProjectDetailPage() {
                   variant="outline"
                   className="w-full"
                 >
-                  {showDiff ? "Hide Changes" : "Show Changes"}
+                  {showDiff ? "Hide Spec Changes" : "Show Spec Changes"}
                 </Button>
               </div>
             )}
@@ -479,11 +585,31 @@ export default function ProjectDetailPage() {
             {/* Generate client button */}
             {currentSpec && (
               <div className="mt-4">
-                <Link href={`/generate-client?specId=${currentSpec.id}`}>
-                  <Button className="w-full">
-                    Generate API Client
-                  </Button>
-                </Link>
+                <Button 
+                  className="w-full"
+                  onClick={generateClient}
+                  disabled={generatingClient || !apiKey}
+                >
+                  {generatingClient 
+                    ? "Generating..." 
+                    : previousClient && generatedClient
+                      ? "Regenerate API Client"
+                      : "Generate API Client"
+                  }
+                </Button>
+              </div>
+            )}
+            
+            {/* Show/Hide client toggle */}
+            {generatedClient && (
+              <div className="mt-4">
+                <Button 
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => setShowClientDiff(!showClientDiff)}
+                >
+                  {showClientDiff ? "Hide Client" : "Show Client"}
+                </Button>
               </div>
             )}
           </div>
@@ -491,7 +617,7 @@ export default function ProjectDetailPage() {
         
         {/* Main content */}
         <div className="lg:col-span-3">
-          {!showDiff && currentSpec && (
+          {!showDiff && !showClientDiff && currentSpec && (
             <>
               <div className="mb-4">
                 <h2 className="text-xl font-semibold">
@@ -511,40 +637,52 @@ export default function ProjectDetailPage() {
             </>
           )}
           
-          {/* Diff view */}
+          {/* Spec Diff view */}
           {showDiff && currentSpec && previousSpec && (
             <>
               <div className="mb-4">
                 <h2 className="text-xl font-semibold">
-                  Comparing Changes
+                  API Specification Changes
                 </h2>
               </div>
               
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <h3 className="font-medium mb-2">Previous Version</h3>
-                  <div className="border rounded h-[400px] overflow-hidden">
-                    <MonacoEditor
-                      height="400px"
-                      language={previousSpec.file_content.trim().startsWith('{') ? "json" : "yaml"}
-                      value={previousSpec.file_content}
-                      options={{ readOnly: true, minimap: { enabled: false } }}
-                    />
-                  </div>
-                </div>
-                
-                <div>
-                  <h3 className="font-medium mb-2">Current Version</h3>
-                  <div className="border rounded h-[400px] overflow-hidden">
-                    <MonacoEditor
-                      height="400px"
-                      language={currentSpec.file_content.trim().startsWith('{') ? "json" : "yaml"}
-                      value={currentSpec.file_content}
-                      options={{ readOnly: true, minimap: { enabled: false } }}
-                    />
-                  </div>
-                </div>
+              <ApiSpecDiff 
+                oldSpec={previousSpec.file_content} 
+                newSpec={currentSpec.file_content}
+                formatType={currentSpec.file_content.trim().startsWith('{') ? 'json' : 'yaml'}
+              />
+            </>
+          )}
+          
+          {/* Client code */}
+          {showClientDiff && generatedClient && (
+            <>
+              <div className="mb-4">
+                <h2 className="text-xl font-semibold">
+                  API Client Code
+                </h2>
               </div>
+              
+              {previousClient ? (
+                <ApiSpecDiff 
+                  oldSpec={previousClient} 
+                  newSpec={generatedClient}
+                  formatType="json" 
+                />
+              ) : (
+                <div className="border rounded-lg" style={{ height: "500px" }}>
+                  <MonacoEditor
+                    height="500px"
+                    language="javascript"
+                    value={generatedClient}
+                    options={{
+                      readOnly: true,
+                      minimap: { enabled: true },
+                      scrollBeyondLastLine: false,
+                    }}
+                  />
+                </div>
+              )}
             </>
           )}
           
@@ -568,6 +706,13 @@ export default function ProjectDetailPage() {
                   Accepts JSON or YAML files
                 </p>
               </div>
+            </div>
+          )}
+          
+          {/* No API key warning */}
+          {!apiKey && currentSpec && (
+            <div className="mt-4 p-4 bg-yellow-100 text-yellow-700 rounded-lg">
+              Gemini API key not found. Please add NEXT_PUBLIC_GEMINI_API_KEY to your .env.local file to enable client generation.
             </div>
           )}
         </div>

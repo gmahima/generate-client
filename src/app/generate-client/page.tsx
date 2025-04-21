@@ -10,6 +10,7 @@ import { supabase } from "@/lib/supabase";
 import { useUser } from "@clerk/nextjs";
 import Link from "next/link";
 import SimpleApiPreview from '@/components/SimpleApiPreview';
+import ApiSpecDiff from '@/components/ApiSpecDiff';
 
 // Import Monaco editor dynamically to avoid SSR issues
 const MonacoEditor = dynamic(
@@ -23,13 +24,17 @@ export default function GenerateClientPage() {
   const { user, isLoaded } = useUser();
   
   const [spec, setSpec] = useState<string | null>(null);
+  const [previousSpec, setPreviousSpec] = useState<string | null>(null);
+  const [hasChanges, setHasChanges] = useState<boolean>(false);
   const [specObj, setSpecObj] = useState<Record<string, unknown> | null>(null);
   const [generatedClient, setGeneratedClient] = useState<string | null>(null);
+  const [previousClient, setPreviousClient] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingSpec, setIsLoadingSpec] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
+  const [showDiff, setShowDiff] = useState<boolean>(false);
 
   // Fetch the API key from environment variables
   useEffect(() => {
@@ -106,6 +111,14 @@ export default function GenerateClientPage() {
       if (!file) return;
 
       const text = await file.text();
+      
+      // If we already have a spec, save it as previous before updating
+      if (spec) {
+        setPreviousSpec(spec);
+        setHasChanges(true);
+        setShowDiff(true);
+      }
+      
       setSpec(text);
       
       try {
@@ -136,7 +149,7 @@ export default function GenerateClientPage() {
       setError("Error reading the uploaded file");
       console.error(error);
     }
-  }, []);
+  }, [spec]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -163,11 +176,37 @@ export default function GenerateClientPage() {
     setError(null);
 
     try {
-      const prompt = `Generate a JavaScript client library for the following OpenAPI specification. 
-      The client should provide functions for all the endpoints defined in the spec.
-      Format the output as JavaScript code only, with detailed comments for each function.
-      Here's the OpenAPI specification:
-      ${spec}`;
+      // If we have a previous client, save it before generating a new one
+      if (generatedClient) {
+        setPreviousClient(generatedClient);
+      }
+      
+      let prompt;
+      
+      if (previousSpec && hasChanges) {
+        // If we have a previous spec, use a diff-based prompt
+        prompt = `Generate a JavaScript client library for the following OpenAPI specification.
+        The client should provide functions for all the endpoints defined in the spec.
+
+        I have a previous version of the API specification and need to update the client code
+        based on the changes.
+        
+        Here's the previous API specification:
+        ${previousSpec}
+        
+        Here's the new API specification:
+        ${spec}
+        
+        Please focus on updating only the parts affected by the changes between these spec versions.
+        Format the output as JavaScript code only, with detailed comments for each function.`;
+      } else {
+        // Regular prompt for first-time generation
+        prompt = `Generate a JavaScript client library for the following OpenAPI specification. 
+        The client should provide functions for all the endpoints defined in the spec.
+        Format the output as JavaScript code only, with detailed comments for each function.
+        Here's the OpenAPI specification:
+        ${spec}`;
+      }
 
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
@@ -267,6 +306,28 @@ export default function GenerateClientPage() {
         </div>
       )}
 
+      {hasChanges && previousSpec && (
+        <div className="mb-6">
+          <div className="flex justify-between items-center mb-3">
+            <h2 className="text-xl font-semibold">API Specification Changes</h2>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowDiff(!showDiff)}
+            >
+              {showDiff ? "Hide Changes" : "Show Changes"}
+            </Button>
+          </div>
+          {showDiff && (
+            <ApiSpecDiff 
+              oldSpec={previousSpec} 
+              newSpec={spec} 
+              formatType={spec?.trim().startsWith('{') ? 'json' : 'yaml'}
+            />
+          )}
+        </div>
+      )}
+
       {specObj && (
         <div className="mb-6">
           <h2 className="text-xl font-semibold mb-3">Specification Preview</h2>
@@ -282,9 +343,24 @@ export default function GenerateClientPage() {
           disabled={!spec || isLoading || !apiKey}
           className="w-full"
         >
-          {isLoading ? "Generating..." : "Generate API Client"}
+          {isLoading ? "Generating..." : hasChanges && previousSpec 
+            ? "Update API Client" 
+            : "Generate API Client"}
         </Button>
       </div>
+
+      {previousClient && generatedClient && (
+        <div className="mb-6">
+          <div className="flex justify-between items-center mb-3">
+            <h2 className="text-xl font-semibold">Client Code Changes</h2>
+          </div>
+          <ApiSpecDiff 
+            oldSpec={previousClient} 
+            newSpec={generatedClient} 
+            formatType="json" 
+          />
+        </div>
+      )}
 
       {generatedClient && (
         <div className="mb-6">
