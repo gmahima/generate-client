@@ -12,6 +12,8 @@
     "@clerk/nextjs": "^6.16.0",
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-slot": "^1.2.0",
+    "@scalar/api-reference": "^1.28.23",
+    "@scalar/nextjs-api-reference": "^0.7.9",
     "@supabase/supabase-js": "^2.49.4",
     "@types/js-yaml": "^4.0.9",
     "class-variance-authority": "^0.7.1",

@@ -2,8 +2,6 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
-import SwaggerUI from "swagger-ui-react";
-import "swagger-ui-react/swagger-ui.css";
 import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import yaml from "js-yaml";
@@ -11,6 +9,7 @@ import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { useUser } from "@clerk/nextjs";
 import Link from "next/link";
+import SimpleApiPreview from '@/components/SimpleApiPreview';
 
 // Import Monaco editor dynamically to avoid SSR issues
 const MonacoEditor = dynamic(
@@ -47,6 +46,13 @@ export default function GenerateClientPage() {
       fetchSpecification(specId);
     }
   }, [specId, isLoaded, user]);
+
+  // Add this useEffect for logging after fetchSpecification
+  useEffect(() => {
+    if (specObj) {
+      console.log("Generate client page - specObj updated:", Object.keys(specObj));
+    }
+  }, [specObj]);
 
   const fetchSpecification = async (id: string) => {
     setIsLoadingSpec(true);
@@ -265,7 +271,7 @@ export default function GenerateClientPage() {
         <div className="mb-6">
           <h2 className="text-xl font-semibold mb-3">Specification Preview</h2>
           <div className="border rounded-lg overflow-hidden">
-            <SwaggerUI spec={specObj} />
+            <SimpleApiPreview spec={specObj} />
           </div>
         </div>
       )}

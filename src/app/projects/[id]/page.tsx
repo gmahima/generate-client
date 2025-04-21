@@ -6,11 +6,10 @@ import { useUser } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabase";
 import { useDropzone } from "react-dropzone";
-import SwaggerUI from "swagger-ui-react";
-import "swagger-ui-react/swagger-ui.css";
 import Link from "next/link";
 import yaml from "js-yaml";
 import dynamic from "next/dynamic";
+import SimpleApiPreview from '@/components/SimpleApiPreview';
 
 // Import Monaco editor dynamically to avoid SSR issues
 const MonacoEditor = dynamic(
@@ -174,6 +173,7 @@ export default function ProjectDetailPage() {
   
   const fetchSpecification = async () => {
     try {
+      console.log("Fetching specifications for project:", id);
       const { data, error } = await supabase
         .from("specifications")
         .select("*")
@@ -183,22 +183,38 @@ export default function ProjectDetailPage() {
         
       if (error) throw error;
       
+      console.log("Specification data received:", data);
+      
       if (data && data.length > 0) {
         setCurrentSpec(data[0]);
         try {
           // Try parsing as JSON first
           let parsedSpec: Record<string, unknown>;
-          try {
-            parsedSpec = JSON.parse(data[0].file_content);
-          } catch {
-            // Try parsing as YAML with our safer method
+          
+          console.log("Attempting to parse specification content");
+          if (data[0].file_content.trim().startsWith('{')) {
+            console.log("Parsing as JSON");
+            try {
+              parsedSpec = JSON.parse(data[0].file_content);
+            } catch (jsonError) {
+              console.error("JSON parsing failed:", jsonError);
+              // Try parsing as YAML with our safer method
+              console.log("Falling back to YAML parsing");
+              parsedSpec = safeParseYaml(data[0].file_content);
+            }
+          } else {
+            console.log("Attempting YAML parsing");
             parsedSpec = safeParseYaml(data[0].file_content);
           }
+          
+          console.log("Successfully parsed specification:", Object.keys(parsedSpec));
           setSpecObj(parsedSpec);
         } catch (parseError) {
           console.error("Failed to parse spec:", parseError);
           setError("Failed to parse the stored specification. It may be in an invalid format.");
         }
+      } else {
+        console.log("No specifications found for this project");
       }
     } catch (error) {
       console.error("Error fetching specification:", error);
@@ -377,6 +393,13 @@ export default function ProjectDetailPage() {
     setShowDiff(!showDiff);
   };
   
+  // Add a useEffect for logging the spec
+  useEffect(() => {
+    if (specObj) {
+      console.log("Spec object available for rendering:", Object.keys(specObj));
+    }
+  }, [specObj]);
+  
   if (!isLoaded || loading) {
     return <div>Loading...</div>;
   }
@@ -479,10 +502,10 @@ export default function ProjectDetailPage() {
                 </h2>
               </div>
               
-              {/* Swagger UI for current spec */}
+              {/* OpenAPI spec preview */}
               {specObj && (
                 <div className="bg-white rounded-lg shadow mb-6">
-                  <SwaggerUI spec={specObj} />
+                  <SimpleApiPreview spec={specObj} />
                 </div>
               )}
             </>
