@@ -17,9 +17,6 @@ export function Navigation() {
             <Link href="/dashboard">
               <Button variant="outline">Dashboard</Button>
             </Link>
-            <Link href="/projects">
-              <Button variant="outline">Projects</Button>
-            </Link>
             <UserButton afterSignOutUrl="/" />
           </SignedIn>
           

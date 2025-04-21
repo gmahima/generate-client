@@ -25,12 +25,48 @@ type Project = {
   created_at: string;
 };
 
-type SpecVersion = {
+type Specification = {
   id: string;
   project_id: string;
-  version: number;
   file_content: string;
   created_at: string;
+};
+
+// Try parsing as YAML safely with fallbacks
+const safeParseYaml = (text: string) => {
+  console.log("safeParseYaml called with content length:", text.length);
+  console.log("Start of content:", text.substring(0, 50).replace(/\n/g, "\\n"));
+  
+  try {
+    // First try with the load function which is more forgiving
+    console.log("Trying yaml.load");
+    const result = yaml.load(text);
+    console.log("yaml.load result type:", typeof result);
+    
+    if (result && typeof result === 'object') {
+      console.log("Valid object returned from yaml.load");
+      return result as Record<string, unknown>;
+    }
+    console.log("yaml.load didn't return an object, got:", typeof result);
+  } catch (e) {
+    console.error("Initial YAML parse failed:", e);
+    // Try with safeLoad which is more strict but may work in some cases
+    try {
+      console.log("Trying yaml.load with DEFAULT_SCHEMA");
+      const result = yaml.load(text, { schema: yaml.DEFAULT_SCHEMA });
+      console.log("yaml.load with schema result type:", typeof result);
+      
+      if (result && typeof result === 'object') {
+        console.log("Valid object returned from yaml.load with schema");
+        return result as Record<string, unknown>;
+      }
+      console.log("yaml.load with schema didn't return an object, got:", typeof result);
+    } catch (innerE) {
+      console.error("Safe YAML parse also failed:", innerE);
+      throw e; // Re-throw the original error
+    }
+  }
+  throw new Error("Failed to parse YAML content");
 };
 
 export default function ProjectDetailPage() {
@@ -39,19 +75,77 @@ export default function ProjectDetailPage() {
   const { user, isLoaded } = useUser();
   
   const [project, setProject] = useState<Project | null>(null);
-  const [specVersions, setSpecVersions] = useState<SpecVersion[]>([]);
-  const [currentSpec, setCurrentSpec] = useState<SpecVersion | null>(null);
-  const [compareSpec, setCompareSpec] = useState<SpecVersion | null>(null);
+  const [currentSpec, setCurrentSpec] = useState<Specification | null>(null);
+  const [previousSpec, setPreviousSpec] = useState<Specification | null>(null);
   const [specObj, setSpecObj] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState(false);
   
+  // Add test function
+  const testDirectInsert = async () => {
+    try {
+      setError(null);
+      setUploading(true);
+      
+      // Create a valid minimal OpenAPI spec
+      const testSpec = {
+        openapi: "3.0.0",
+        info: {
+          title: "Test API",
+          version: "1.0.0"
+        },
+        paths: {}
+      };
+      
+      const specString = JSON.stringify(testSpec, null, 2);
+      console.log("Test spec created:", specString);
+      
+      if (currentSpec) {
+        const { error: updateError } = await supabase
+          .from("specifications")
+          .update({ file_content: specString })
+          .eq("id", currentSpec.id);
+          
+        if (updateError) {
+          console.error("Test update failed:", updateError);
+          throw updateError;
+        }
+        console.log("Test update succeeded");
+      } else {
+        const { error: insertError } = await supabase
+          .from("specifications")
+          .insert([{
+            project_id: id,
+            file_content: specString
+          }]);
+          
+        if (insertError) {
+          console.error("Test insert failed:", insertError);
+          throw insertError;
+        }
+        console.log("Test insert succeeded");
+      }
+      
+      // Set the object directly
+      setSpecObj(testSpec);
+      fetchSpecification();
+    } catch (testError: unknown) {
+      const errorMessage = testError instanceof Error 
+        ? testError.message 
+        : "Test insertion failed";
+      console.error("Test insertion error:", errorMessage);
+      setError(errorMessage);
+    } finally {
+      setUploading(false);
+    }
+  };
+  
   useEffect(() => {
     if (isLoaded && user) {
       fetchProject();
-      fetchSpecVersions();
+      fetchSpecification();
     }
   }, [id, user, isLoaded]);
   
@@ -78,19 +172,17 @@ export default function ProjectDetailPage() {
     }
   };
   
-  const fetchSpecVersions = async () => {
+  const fetchSpecification = async () => {
     try {
       const { data, error } = await supabase
         .from("specifications")
         .select("*")
         .eq("project_id", id)
-        .order("version", { ascending: false });
+        .order("created_at", { ascending: false })
+        .limit(1);
         
       if (error) throw error;
       
-      setSpecVersions(data || []);
-      
-      // Set the latest version as current
       if (data && data.length > 0) {
         setCurrentSpec(data[0]);
         try {
@@ -99,16 +191,17 @@ export default function ProjectDetailPage() {
           try {
             parsedSpec = JSON.parse(data[0].file_content);
           } catch {
-            // Try parsing as YAML
-            parsedSpec = yaml.load(data[0].file_content) as Record<string, unknown>;
+            // Try parsing as YAML with our safer method
+            parsedSpec = safeParseYaml(data[0].file_content);
           }
           setSpecObj(parsedSpec);
         } catch (parseError) {
           console.error("Failed to parse spec:", parseError);
+          setError("Failed to parse the stored specification. It may be in an invalid format.");
         }
       }
     } catch (error) {
-      console.error("Error fetching specifications:", error);
+      console.error("Error fetching specification:", error);
     } finally {
       setLoading(false);
     }
@@ -122,58 +215,152 @@ export default function ProjectDetailPage() {
       if (!file) return;
       
       setUploading(true);
+      console.log("File being processed:", file.name, "Size:", file.size, "bytes");
       
       const text = await file.text();
+      console.log("File content length:", text.length);
+      console.log("Start of content:", text.substring(0, 100));
+      
+      // For direct manual testing - log a simplified version
+      try {
+        // Try to create a simpler test object to debug
+        const testObject = { 
+          openapi: "3.0.0",
+          info: { title: "Test API", version: "1.0.0" },
+          paths: {}
+        };
+        console.log("Test object can be stringified:", JSON.stringify(testObject));
+        
+        // Try to force parsing using eval (for debugging only)
+        // eslint-disable-next-line no-eval
+        const evalTest = JSON.stringify(testObject);
+        console.log("Eval test successful:", evalTest.substring(0, 50));
+      } catch (debugError) {
+        console.error("Debug testing failed:", debugError);
+      }
+      
+      // Validate file content
+      if (!text || text.trim() === '') {
+        throw new Error("Empty file");
+      }
       
       // Try parsing to validate format
       try {
         let parsedSpec: Record<string, unknown>;
+        
         if (file.name.endsWith('.json')) {
-          parsedSpec = JSON.parse(text);
+          console.log("Attempting to parse as JSON");
+          try {
+            parsedSpec = JSON.parse(text);
+            console.log("JSON parsing successful");
+          } catch (e) {
+            console.error("Failed to parse JSON:", e);
+            throw new Error("Invalid JSON format");
+          }
         } else if (file.name.endsWith('.yaml') || file.name.endsWith('.yml')) {
-          parsedSpec = yaml.load(text) as Record<string, unknown>;
+          console.log("Attempting to parse as YAML");
+          try {
+            console.log("Using safeParseYaml function");
+            parsedSpec = safeParseYaml(text);
+            console.log("YAML parsing successful, result type:", typeof parsedSpec);
+            console.log("YAML parsing result keys:", Object.keys(parsedSpec));
+          } catch (e) {
+            console.error("Failed to parse YAML:", e);
+            throw new Error("Invalid YAML format");
+          }
         } else {
+          console.log("File extension not recognized, trying both JSON and YAML");
           // Try both formats
           try {
             parsedSpec = JSON.parse(text);
-          } catch {
-            parsedSpec = yaml.load(text) as Record<string, unknown>;
+            console.log("Parsed as JSON successfully");
+          } catch (jsonError) {
+            console.log("JSON parsing failed, trying YAML");
+            try {
+              parsedSpec = safeParseYaml(text);
+              console.log("YAML parsing successful");
+            } catch (yamlError) {
+              console.error("Failed to parse as JSON:", jsonError);
+              console.error("Failed to parse as YAML:", yamlError);
+              throw new Error("Could not parse as JSON or YAML");
+            }
           }
         }
         
-        // Calculate next version number
-        const nextVersion = specVersions.length > 0 
-          ? specVersions[0].version + 1 
-          : 1;
+        // Validate that it's an OpenAPI spec (more lenient check)
+        console.log("Validating OpenAPI spec, keys:", Object.keys(parsedSpec));
+        if (!parsedSpec.openapi && !parsedSpec.swagger && 
+            !parsedSpec.info && !parsedSpec.paths) {
+          console.warn("OpenAPI validation warning: Missing expected fields", parsedSpec);
+          // We'll continue anyway since some valid specs might be structured differently
+        }
         
-        // Insert the new specification version
-        const { error } = await supabase
-          .from("specifications")
-          .insert([
-            {
-              project_id: id,
-              version: nextVersion,
-              file_content: text
-            }
-          ]);
-          
-        if (error) throw error;
+        // For debugging, check the structure directly
+        console.log("OpenAPI version:", parsedSpec.openapi || parsedSpec.swagger);
+        console.log("Has 'info':", !!parsedSpec.info);
+        console.log("Has 'paths':", !!parsedSpec.paths);
         
-        // Update the UI
+        // Save the previous spec for diff
+        if (currentSpec) {
+          setPreviousSpec({...currentSpec});
+        }
+        
+        console.log("Saving to database");
+        if (currentSpec) {
+          // Update existing spec
+          const { error } = await supabase
+            .from("specifications")
+            .update({ file_content: text })
+            .eq("id", currentSpec.id);
+            
+          if (error) {
+            console.error("Supabase update error:", error);
+            throw error;
+          }
+          console.log("Updated existing spec");
+        } else {
+          // Create new spec if none exists
+          const { error } = await supabase
+            .from("specifications")
+            .insert([
+              {
+                project_id: id,
+                file_content: text
+              }
+            ]);
+            
+          if (error) {
+            console.error("Supabase insert error:", error);
+            throw error;
+          }
+          console.log("Created new spec");
+        }
+        
+        // Update the UI with the parsed spec
+        console.log("Setting spec object in state");
         setSpecObj(parsedSpec);
-        fetchSpecVersions(); // Refresh the list
+        console.log("Fetching updated specification");
+        fetchSpecification(); // Refresh
         
-      } catch (parseError) {
+      } catch (parseError: unknown) {
         console.error("Failed to parse file:", parseError);
-        setError("Invalid specification format. Please upload a valid OpenAPI specification in JSON or YAML format.");
+        const errorMessage = parseError instanceof Error 
+          ? parseError.message 
+          : "Please upload a valid OpenAPI specification in JSON or YAML format.";
+        console.error("Setting error:", errorMessage);
+        setError(`Invalid specification format: ${errorMessage}`);
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Error uploading specification:", error);
-      setError("Failed to upload specification");
+      const errorMessage = error instanceof Error 
+        ? error.message 
+        : "Failed to upload specification";
+      console.error("Setting error:", errorMessage);  
+      setError(errorMessage);
     } finally {
       setUploading(false);
     }
-  }, [id, specVersions]);
+  }, [id, currentSpec]);
   
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -186,28 +373,8 @@ export default function ProjectDetailPage() {
     disabled: uploading
   });
   
-  const selectVersionForComparison = (version: SpecVersion) => {
-    setCompareSpec(version);
-    setShowDiff(true);
-  };
-  
-  const selectVersion = (version: SpecVersion) => {
-    setCurrentSpec(version);
-    try {
-      // Try parsing as JSON first
-      let parsedSpec: Record<string, unknown>;
-      try {
-        parsedSpec = JSON.parse(version.file_content);
-      } catch {
-        // Try parsing as YAML
-        parsedSpec = yaml.load(version.file_content) as Record<string, unknown>;
-      }
-      setSpecObj(parsedSpec);
-      setShowDiff(false);
-      setCompareSpec(null);
-    } catch (parseError) {
-      console.error("Failed to parse spec:", parseError);
-    }
+  const toggleDiffView = () => {
+    setShowDiff(!showDiff);
   };
   
   if (!isLoaded || loading) {
@@ -238,15 +405,20 @@ export default function ProjectDetailPage() {
           </Link>
           <h1 className="text-3xl font-bold">{project?.name}</h1>
         </div>
+        
+        {/* Add debug button */}
+        <Button onClick={testDirectInsert} variant="outline" className="bg-yellow-100">
+          Debug: Insert Test Spec
+        </Button>
       </div>
       
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Sidebar with versions */}
+        {/* Sidebar */}
         <div className="lg:col-span-1">
           <div className="bg-white rounded-lg shadow p-4">
-            <h2 className="text-xl font-semibold mb-4">Spec Versions</h2>
+            <h2 className="text-xl font-semibold mb-4">API Specification</h2>
             
-            {/* Upload new version */}
+            {/* Upload spec */}
             <div className="mb-6">
               <div
                 {...getRootProps()}
@@ -263,41 +435,33 @@ export default function ProjectDetailPage() {
                   <p>Drop the file here...</p>
                 ) : (
                   <p className="text-sm">
-                    Upload a new version
+                    {currentSpec ? "Upload updated spec" : "Upload your API spec"}
                   </p>
                 )}
               </div>
             </div>
             
-            {/* Version list */}
-            {specVersions.length === 0 ? (
-              <p className="text-gray-500 text-center">No versions yet</p>
-            ) : (
-              <ul className="space-y-2">
-                {specVersions.map((version) => (
-                  <li key={version.id}>
-                    <div className="flex justify-between items-center p-2 border rounded hover:bg-gray-50">
-                      <button 
-                        onClick={() => selectVersion(version)}
-                        className={`text-left flex-grow ${currentSpec?.id === version.id ? 'font-semibold' : ''}`}
-                      >
-                        v{version.version}
-                        <span className="block text-xs text-gray-500">
-                          {new Date(version.created_at).toLocaleString()}
-                        </span>
-                      </button>
-                      {specVersions.length > 1 && currentSpec?.id !== version.id && (
-                        <button 
-                          onClick={() => selectVersionForComparison(version)}
-                          className="text-xs text-blue-500 hover:underline"
-                        >
-                          Compare
-                        </button>
-                      )}
-                    </div>
-                  </li>
-                ))}
-              </ul>
+            {previousSpec && (
+              <div className="mb-4">
+                <Button 
+                  onClick={toggleDiffView}
+                  variant="outline"
+                  className="w-full"
+                >
+                  {showDiff ? "Hide Changes" : "Show Changes"}
+                </Button>
+              </div>
+            )}
+            
+            {/* Generate client button */}
+            {currentSpec && (
+              <div className="mt-4">
+                <Link href={`/generate-client?specId=${currentSpec.id}`}>
+                  <Button className="w-full">
+                    Generate API Client
+                  </Button>
+                </Link>
+              </div>
             )}
           </div>
         </div>
@@ -308,9 +472,9 @@ export default function ProjectDetailPage() {
             <>
               <div className="mb-4">
                 <h2 className="text-xl font-semibold">
-                  Version {currentSpec.version} 
+                  Current Specification
                   <span className="text-sm text-gray-500 ml-2">
-                    Uploaded: {new Date(currentSpec.created_at).toLocaleString()}
+                    Last updated: {new Date(currentSpec.created_at).toLocaleString()}
                   </span>
                 </h2>
               </div>
@@ -325,36 +489,29 @@ export default function ProjectDetailPage() {
           )}
           
           {/* Diff view */}
-          {showDiff && currentSpec && compareSpec && (
+          {showDiff && currentSpec && previousSpec && (
             <>
               <div className="mb-4">
                 <h2 className="text-xl font-semibold">
-                  Comparing v{currentSpec.version} with v{compareSpec.version}
+                  Comparing Changes
                 </h2>
-                <Button 
-                  onClick={() => setShowDiff(false)} 
-                  variant="outline" 
-                  className="mt-2"
-                >
-                  Back to Current Version
-                </Button>
               </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <h3 className="font-medium mb-2">Version {compareSpec.version}</h3>
+                  <h3 className="font-medium mb-2">Previous Version</h3>
                   <div className="border rounded h-[400px] overflow-hidden">
                     <MonacoEditor
                       height="400px"
-                      language={compareSpec.file_content.trim().startsWith('{') ? "json" : "yaml"}
-                      value={compareSpec.file_content}
+                      language={previousSpec.file_content.trim().startsWith('{') ? "json" : "yaml"}
+                      value={previousSpec.file_content}
                       options={{ readOnly: true, minimap: { enabled: false } }}
                     />
                   </div>
                 </div>
                 
                 <div>
-                  <h3 className="font-medium mb-2">Version {currentSpec.version} (Latest)</h3>
+                  <h3 className="font-medium mb-2">Current Version</h3>
                   <div className="border rounded h-[400px] overflow-hidden">
                     <MonacoEditor
                       height="400px"
@@ -369,11 +526,11 @@ export default function ProjectDetailPage() {
           )}
           
           {/* Empty state */}
-          {specVersions.length === 0 && (
+          {!currentSpec && (
             <div className="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center">
-              <h3 className="text-lg font-medium mb-2">No specifications yet</h3>
+              <h3 className="text-lg font-medium mb-2">No specification yet</h3>
               <p className="text-gray-600 mb-4">
-                Upload your first OpenAPI specification to get started.
+                Upload your OpenAPI specification to get started.
               </p>
               <div
                 {...getRootProps()}
@@ -388,17 +545,6 @@ export default function ProjectDetailPage() {
                   Accepts JSON or YAML files
                 </p>
               </div>
-            </div>
-          )}
-          
-          {/* Generate client button */}
-          {currentSpec && (
-            <div className="mt-6">
-              <Link href={`/generate-client?specId=${currentSpec.id}`}>
-                <Button className="w-full">
-                  Generate API Client for this Version
-                </Button>
-              </Link>
             </div>
           )}
         </div>
