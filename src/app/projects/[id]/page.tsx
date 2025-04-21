@@ -11,6 +11,8 @@ import yaml from "js-yaml";
 import SimpleApiPreview from '@/components/SimpleApiPreview';
 import ApiSpecDiff from '@/components/ApiSpecDiff';
 import dynamic from "next/dynamic";
+import { generatePackageJson } from "@/lib/npm-publish";
+import { AlertCircle } from "lucide-react";
 
 // Import Monaco editor dynamically to avoid SSR issues
 const MonacoEditor = dynamic(
@@ -89,6 +91,20 @@ export default function ProjectDetailPage() {
   const [previousClient, setPreviousClient] = useState<string | null>(null);
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [showClientDiff, setShowClientDiff] = useState<boolean>(false);
+  
+  // States for npm publishing
+  const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
+  const [packageName, setPackageName] = useState("");
+  const [packageVersion, setPackageVersion] = useState("1.0.0");
+  const [packageDescription, setPackageDescription] = useState("");
+  const [packageAuthor, setPackageAuthor] = useState("");
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [publishResult, setPublishResult] = useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   
   // Fetch the API key from environment variables
   useEffect(() => {
@@ -240,160 +256,80 @@ export default function ProjectDetailPage() {
     }
   };
   
+  // Add function to handle spec upload
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     setError(null);
-    
     try {
       const file = acceptedFiles[0];
       if (!file) return;
       
-      setUploading(true);
-      console.log("File being processed:", file.name, "Size:", file.size, "bytes");
-      
-      const text = await file.text();
-      console.log("File content length:", text.length);
-      console.log("Start of content:", text.substring(0, 100));
-      
-      // For direct manual testing - log a simplified version
-      try {
-        // Try to create a simpler test object to debug
-        const testObject = { 
-          openapi: "3.0.0",
-          info: { title: "Test API", version: "1.0.0" },
-          paths: {}
-        };
-        console.log("Test object can be stringified:", JSON.stringify(testObject));
-        
-        // Try to force parsing using eval (for debugging only)
-        // eslint-disable-next-line no-eval
-        const evalTest = JSON.stringify(testObject);
-        console.log("Eval test successful:", evalTest.substring(0, 50));
-      } catch (debugError) {
-        console.error("Debug testing failed:", debugError);
+      // Store the current spec as previous
+      if (currentSpec) {
+        setPreviousSpec(currentSpec);
+        setShowDiff(true);
+        setHasUnsavedChanges(true);
       }
       
-      // Validate file content
-      if (!text || text.trim() === '') {
-        throw new Error("Empty file");
-      }
+      const fileContent = await file.text();
       
-      // Try parsing to validate format
       try {
+        // Try parsing the spec based on file type
         let parsedSpec: Record<string, unknown>;
         
         if (file.name.endsWith('.json')) {
-          console.log("Attempting to parse as JSON");
-          try {
-            parsedSpec = JSON.parse(text);
-            console.log("JSON parsing successful");
-          } catch (e) {
-            console.error("Failed to parse JSON:", e);
-            throw new Error("Invalid JSON format");
-          }
+          parsedSpec = JSON.parse(fileContent);
         } else if (file.name.endsWith('.yaml') || file.name.endsWith('.yml')) {
-          console.log("Attempting to parse as YAML");
-          try {
-            console.log("Using safeParseYaml function");
-            parsedSpec = safeParseYaml(text);
-            console.log("YAML parsing successful, result type:", typeof parsedSpec);
-            console.log("YAML parsing result keys:", Object.keys(parsedSpec));
-          } catch (e) {
-            console.error("Failed to parse YAML:", e);
-            throw new Error("Invalid YAML format");
-          }
+          parsedSpec = safeParseYaml(fileContent);
         } else {
-          console.log("File extension not recognized, trying both JSON and YAML");
           // Try both formats
           try {
-            parsedSpec = JSON.parse(text);
-            console.log("Parsed as JSON successfully");
-          } catch (jsonError) {
-            console.log("JSON parsing failed, trying YAML");
-            try {
-              parsedSpec = safeParseYaml(text);
-              console.log("YAML parsing successful");
-            } catch (yamlError) {
-              console.error("Failed to parse as JSON:", jsonError);
-              console.error("Failed to parse as YAML:", yamlError);
-              throw new Error("Could not parse as JSON or YAML");
-            }
+            parsedSpec = JSON.parse(fileContent);
+          } catch {
+            parsedSpec = safeParseYaml(fileContent);
           }
         }
         
-        // Validate that it's an OpenAPI spec (more lenient check)
-        console.log("Validating OpenAPI spec, keys:", Object.keys(parsedSpec));
-        if (!parsedSpec.openapi && !parsedSpec.swagger && 
-            !parsedSpec.info && !parsedSpec.paths) {
-          console.warn("OpenAPI validation warning: Missing expected fields", parsedSpec);
-          // We'll continue anyway since some valid specs might be structured differently
+        if (!parsedSpec) {
+          throw new Error("Failed to parse file content");
         }
         
-        // For debugging, check the structure directly
-        console.log("OpenAPI version:", parsedSpec.openapi || parsedSpec.swagger);
-        console.log("Has 'info':", !!parsedSpec.info);
-        console.log("Has 'paths':", !!parsedSpec.paths);
-        
-        // Save the previous spec for diff
-        if (currentSpec) {
-          setPreviousSpec({...currentSpec});
-        }
-        
-        console.log("Saving to database");
-        if (currentSpec) {
-          // Update existing spec
-          const { error } = await supabase
-            .from("specifications")
-            .update({ file_content: text })
-            .eq("id", currentSpec.id);
-            
-          if (error) {
-            console.error("Supabase update error:", error);
-            throw error;
-          }
-          console.log("Updated existing spec");
-        } else {
-          // Create new spec if none exists
-          const { error } = await supabase
-            .from("specifications")
-            .insert([
-              {
-                project_id: id,
-                file_content: text
-              }
-            ]);
-            
-          if (error) {
-            console.error("Supabase insert error:", error);
-            throw error;
-          }
-          console.log("Created new spec");
-        }
-        
-        // Update the UI with the parsed spec
-        console.log("Setting spec object in state");
+        // Set the parsed object first
         setSpecObj(parsedSpec);
-        console.log("Fetching updated specification");
-        fetchSpecification(); // Refresh
         
-      } catch (parseError: unknown) {
+        // Update or create spec in DB
+        setUploading(true);
+        
+        // Instead of immediately saving to DB, just update the UI with the new spec
+        if (currentSpec) {
+          // Create a new specification object but don't save to DB yet
+          setCurrentSpec({
+            ...currentSpec,
+            file_content: fileContent
+          });
+        } else {
+          // For new specs, we'll handle create when publishing
+          setCurrentSpec({
+            id: 'temp-id',
+            project_id: id as string,
+            file_content: fileContent,
+            created_at: new Date().toISOString()
+          });
+        }
+        
+        setHasUnsavedChanges(true);
+        setSuccessMessage("Specification loaded successfully. It will be saved when you publish to npm.");
+        setTimeout(() => setSuccessMessage(null), 3000);
+      } catch (parseError) {
         console.error("Failed to parse file:", parseError);
-        const errorMessage = parseError instanceof Error 
-          ? parseError.message 
-          : "Please upload a valid OpenAPI specification in JSON or YAML format.";
-        console.error("Setting error:", errorMessage);
-        setError(`Invalid specification format: ${errorMessage}`);
+        setError("Invalid API specification format. Please upload a valid OpenAPI spec in JSON or YAML format.");
       }
-    } catch (error: unknown) {
-      console.error("Error uploading specification:", error);
-      const errorMessage = error instanceof Error 
-        ? error.message 
-        : "Failed to upload specification";
-      console.error("Setting error:", errorMessage);  
-      setError(errorMessage);
+    } catch (error) {
+      console.error("Error reading file:", error);
+      setError("Failed to read the uploaded file");
     } finally {
       setUploading(false);
     }
-  }, [id, currentSpec]);
+  }, [currentSpec, id]);
   
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -506,6 +442,111 @@ export default function ProjectDetailPage() {
     }
   };
   
+  // Add save spec function
+  const saveSpecToDb = async () => {
+    if (!currentSpec) return false;
+    
+    try {
+      if (currentSpec.id === 'temp-id') {
+        // This is a new spec, need to insert
+        const { data, error } = await supabase
+          .from("specifications")
+          .insert({
+            project_id: id,
+            file_content: currentSpec.file_content
+          })
+          .select()
+          .single();
+          
+        if (error) throw error;
+        
+        // Update with the real ID
+        setCurrentSpec(data);
+      } else {
+        // Update existing spec
+        const { error } = await supabase
+          .from("specifications")
+          .update({ file_content: currentSpec.file_content })
+          .eq("id", currentSpec.id);
+          
+        if (error) throw error;
+      }
+      
+      setHasUnsavedChanges(false);
+      return true;
+    } catch (error) {
+      console.error("Error saving specification:", error);
+      setError("Failed to save specification to database");
+      return false;
+    }
+  };
+  
+  // Add function to publish to npm
+  const handlePublishToNpm = async () => {
+    if (!generatedClient || !currentSpec) return;
+    
+    setIsPublishing(true);
+    setPublishResult(null);
+    
+    try {
+      // First save spec to DB if needed
+      if (hasUnsavedChanges) {
+        const specSaved = await saveSpecToDb();
+        if (!specSaved) {
+          throw new Error("Failed to save specification to database. Aborting package publishing.");
+        }
+      }
+      
+      // Generate package.json content
+      const packageJson = generatePackageJson({
+        name: packageName,
+        version: packageVersion,
+        description: packageDescription,
+        author: packageAuthor,
+      });
+
+      // Create FormData for API request
+      const formData = new FormData();
+      
+      // Add the package.json file
+      const packageJsonBlob = new Blob([packageJson], { type: 'application/json' });
+      formData.append('package.json', packageJsonBlob, 'package.json');
+      
+      // Add the index.js file containing the client code
+      const clientCodeBlob = new Blob([generatedClient], { type: 'application/javascript' });
+      formData.append('index.js', clientCodeBlob, 'index.js');
+      
+      // Send the request to the API endpoint
+      const response = await fetch('/api/publish-npm', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to publish package');
+      }
+
+      const data = await response.json();
+      setPublishResult({
+        success: true,
+        message: data.message || 'Package published successfully',
+      });
+    } catch (error) {
+      setPublishResult({
+        success: false,
+        message: error instanceof Error ? error.message : "Unknown error occurred",
+      });
+    } finally {
+      setIsPublishing(false);
+    }
+  };
+  
+  // Basic validation for npm package
+  const isPackageValid = packageName.trim() !== "" && 
+                         packageVersion.trim() !== "" && 
+                         /^\d+\.\d+\.\d+$/.test(packageVersion.trim());
+  
   if (!isLoaded || loading) {
     return <div>Loading...</div>;
   }
@@ -540,6 +581,32 @@ export default function ProjectDetailPage() {
           Debug: Insert Test Spec
         </Button>
       </div>
+      
+      {/* Add success message */}
+      {successMessage && (
+        <div className="mb-6 p-4 bg-green-100 text-green-700 rounded-lg">
+          {successMessage}
+        </div>
+      )}
+      
+      {hasUnsavedChanges && (
+        <div className="mb-6 p-4 bg-yellow-100 text-yellow-700 rounded-lg flex justify-between items-center">
+          <div>
+            <p className="font-medium">You have unsaved changes to the specification</p>
+            <p className="text-sm mt-1">
+              The specification will be saved to the database when you publish the package, keeping it in sync with your npm package.
+            </p>
+          </div>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={saveSpecToDb}
+            disabled={uploading}
+          >
+            Save to DB
+          </Button>
+        </div>
+      )}
       
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Sidebar */}
@@ -609,6 +676,20 @@ export default function ProjectDetailPage() {
                   onClick={() => setShowClientDiff(!showClientDiff)}
                 >
                   {showClientDiff ? "Hide Client" : "Show Client"}
+                </Button>
+              </div>
+            )}
+            
+            {/* Add publish to npm button */}
+            {generatedClient && (
+              <div className="mt-4">
+                <Button 
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => setIsPublishDialogOpen(true)}
+                  disabled={!generatedClient}
+                >
+                  {hasUnsavedChanges ? "Save & Publish to npm" : "Publish to npm"}
                 </Button>
               </div>
             )}
@@ -717,6 +798,108 @@ export default function ProjectDetailPage() {
           )}
         </div>
       </div>
+      
+      {/* Publish to npm dialog */}
+      {isPublishDialogOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-lg shadow-lg max-w-md w-full">
+            <h2 className="text-xl font-bold mb-4">Publish to npm</h2>
+            
+            {hasUnsavedChanges && (
+              <div className="mb-4 p-3 bg-blue-50 text-blue-700 rounded-lg text-sm">
+                <p className="font-medium">Important:</p>
+                <p>Your specification changes will be saved to the database when you publish, ensuring the database and npm package stay in sync.</p>
+              </div>
+            )}
+            
+            <p className="text-gray-600 mb-4">
+              Fill out the package details below to publish your client to npm
+            </p>
+
+            <div className="space-y-4">
+              <div className="grid grid-cols-4 items-center gap-4">
+                <label htmlFor="packageName" className="text-sm font-medium text-right">
+                  Package Name
+                </label>
+                <input
+                  id="packageName"
+                  value={packageName}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPackageName(e.target.value)}
+                  className="col-span-3 px-3 py-2 border rounded-md w-full"
+                  placeholder="my-api-client"
+                  required
+                />
+              </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <label htmlFor="version" className="text-sm font-medium text-right">
+                  Version
+                </label>
+                <input
+                  id="version"
+                  value={packageVersion}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPackageVersion(e.target.value)}
+                  className="col-span-3 px-3 py-2 border rounded-md w-full"
+                  placeholder="1.0.0"
+                  required
+                />
+              </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <label htmlFor="description" className="text-sm font-medium text-right">
+                  Description
+                </label>
+                <textarea
+                  id="description"
+                  value={packageDescription}
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setPackageDescription(e.target.value)}
+                  className="col-span-3 px-3 py-2 border rounded-md w-full"
+                  placeholder="Generated API client for my API"
+                />
+              </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <label htmlFor="author" className="text-sm font-medium text-right">
+                  Author
+                </label>
+                <input
+                  id="author"
+                  value={packageAuthor}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPackageAuthor(e.target.value)}
+                  className="col-span-3 px-3 py-2 border rounded-md w-full"
+                  placeholder="Your Name"
+                />
+              </div>
+            </div>
+
+            {publishResult && (
+              <div className={`p-4 mt-4 rounded-lg ${publishResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                <div className="flex items-center">
+                  <AlertCircle className="h-4 w-4 mr-2" />
+                  <p className="font-medium">
+                    {publishResult.success ? "Success" : "Error"}
+                  </p>
+                </div>
+                <p className="ml-6">
+                  {publishResult.message}
+                </p>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 mt-6">
+              <Button 
+                variant="outline" 
+                onClick={() => setIsPublishDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button 
+                onClick={handlePublishToNpm}
+                disabled={!isPackageValid || isPublishing}
+              >
+                {isPublishing ? "Publishing..." : "Publish"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 } 
