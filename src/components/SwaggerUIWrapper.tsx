@@ -3,7 +3,7 @@ import SwaggerUI from 'swagger-ui-react';
 import 'swagger-ui-react/swagger-ui.css';
 
 type SwaggerUIWrapperProps = {
-  spec?: any;
+  spec?: object;
   url?: string;
 };
 
@@ -25,7 +25,6 @@ const SwaggerUIWrapper: React.FC<SwaggerUIWrapperProps> = ({ spec, url }) => {
         docExpansion="list"
         defaultModelsExpandDepth={-1} // Hide models by default
         defaultModelExpandDepth={-1}
-        validatorUrl={null} // Disable validation
       />
     </div>
   );
