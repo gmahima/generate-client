@@ -11,8 +11,6 @@ import yaml from "js-yaml";
 import SimpleApiPreview from '@/components/SimpleApiPreview';
 import ApiSpecDiff from '@/components/ApiSpecDiff';
 import dynamic from "next/dynamic";
-import { generatePackageJson } from "@/lib/npm-publish";
-import { AlertCircle } from "lucide-react";
 
 // Import Monaco editor dynamically to avoid SSR issues
 const MonacoEditor = dynamic(
@@ -25,6 +23,14 @@ type Project = {
   name: string;
   user_id: string;
   created_at: string;
+  npm_configs?: NpmConfig;
+};
+
+type NpmConfig = {
+  package_name: string;
+  version: string;
+  description: string;
+  author: string;
 };
 
 type Specification = {
@@ -32,6 +38,16 @@ type Specification = {
   project_id: string;
   file_content: string;
   created_at: string;
+  version?: string;
+};
+
+type SpecVersion = {
+  id: string;
+  spec_id: string;
+  version: string;
+  file_content: string;
+  created_at: string;
+  is_published: boolean;
 };
 
 // Try parsing as YAML safely with fallbacks
@@ -89,107 +105,52 @@ export default function ProjectDetailPage() {
   const [isEditMode, setIsEditMode] = useState(false);
   const [editorContent, setEditorContent] = useState<string>("");
   
-  // Client generation states
-  const [generatingClient, setGeneratingClient] = useState(false);
+  // States for client view
   const [generatedClient, setGeneratedClient] = useState<string | null>(null);
   const [previousClient, setPreviousClient] = useState<string | null>(null);
-  const [apiKey, setApiKey] = useState<string | null>(null);
   const [showClientDiff, setShowClientDiff] = useState<boolean>(false);
   
-  // States for npm publishing
-  const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
-  const [packageName, setPackageName] = useState("");
-  const [packageVersion, setPackageVersion] = useState("1.0.0");
-  const [packageDescription, setPackageDescription] = useState("");
-  const [packageAuthor, setPackageAuthor] = useState("");
-  const [isPublishing, setIsPublishing] = useState(false);
-  const [publishResult, setPublishResult] = useState<{
-    success: boolean;
-    message: string;
-  } | null>(null);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  // States for npm configuration
+  const [isConfigDialogOpen, setIsConfigDialogOpen] = useState(false);
+  const [npmConfig, setNpmConfig] = useState<NpmConfig>({
+    package_name: "",
+    version: "1.0.0",
+    description: "",
+    author: ""
+  });
+  
+  // State for version control
+  const [versions, setVersions] = useState<SpecVersion[]>([]);
+  const [selectedVersion, setSelectedVersion] = useState<string | null>(null);
+  
+  // States for confirmation dialog
+  const [isConfirmUploadOpen, setIsConfirmUploadOpen] = useState(false);
+  const [pendingUploadContent, setPendingUploadContent] = useState<string | null>(null);
+  
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  
-  // Fetch the API key from environment variables
-  useEffect(() => {
-    // In production, this should be set on the server or in .env.local
-    const envApiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-    if (envApiKey) {
-      setApiKey(envApiKey);
-    }
-  }, []);
-  
-  // Add test function
-  const testDirectInsert = async () => {
-    try {
-      setError(null);
-      setUploading(true);
-      
-      // Create a valid minimal OpenAPI spec
-      const testSpec = {
-        openapi: "3.0.0",
-        info: {
-          title: "Test API",
-          version: "1.0.0"
-        },
-        paths: {}
-      };
-      
-      const specString = JSON.stringify(testSpec, null, 2);
-      console.log("Test spec created:", specString);
-      
-      if (currentSpec) {
-        const { error: updateError } = await supabase
-          .from("specifications")
-          .update({ file_content: specString })
-          .eq("id", currentSpec.id);
-          
-        if (updateError) {
-          console.error("Test update failed:", updateError);
-          throw updateError;
-        }
-        console.log("Test update succeeded");
-      } else {
-        const { error: insertError } = await supabase
-          .from("specifications")
-          .insert([{
-            project_id: id,
-            file_content: specString
-          }]);
-          
-        if (insertError) {
-          console.error("Test insert failed:", insertError);
-          throw insertError;
-        }
-        console.log("Test insert succeeded");
-      }
-      
-      // Set the object directly
-      setSpecObj(testSpec);
-      fetchSpecification();
-    } catch (testError: unknown) {
-      const errorMessage = testError instanceof Error 
-        ? testError.message 
-        : "Test insertion failed";
-      console.error("Test insertion error:", errorMessage);
-      setError(errorMessage);
-    } finally {
-      setUploading(false);
-    }
-  };
   
   useEffect(() => {
     if (isLoaded && user) {
       fetchProject();
-      fetchSpecification();
     }
   }, [id, user, isLoaded]);
+
+  useEffect(() => {
+    if (project) {
+      // Check if npm config exists
+      if (!project.npm_configs) {
+        setIsConfigDialogOpen(true);
+      }
+      fetchSpecification();
+      fetchSpecVersions();
+    }
+  }, [project]);
   
   const fetchProject = async () => {
     try {
       const { data, error } = await supabase
         .from("projects")
-        .select("*")
+        .select("*, npm_configs(*)")
         .eq("id", id)
         .single();
         
@@ -199,6 +160,16 @@ export default function ProjectDetailPage() {
       if (data.user_id !== user?.id) {
         router.push("/dashboard");
         throw new Error("You don't have access to this project");
+      }
+      
+      // Transform npm_config if it exists
+      if (data.npm_configs) {
+        setNpmConfig({
+          package_name: data.npm_configs.package_name || "",
+          version: data.npm_configs.version || "1.0.0",
+          description: data.npm_configs.description || "",
+          author: data.npm_configs.author || ""
+        });
       }
       
       setProject(data);
@@ -260,6 +231,76 @@ export default function ProjectDetailPage() {
     }
   };
   
+  const fetchSpecVersions = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("spec_versions")
+        .select("*")
+        .eq("project_id", id)
+        .order("created_at", { ascending: false });
+      
+      if (error) throw error;
+      
+      if (data && data.length > 0) {
+        setVersions(data);
+        // Set the latest version as selected by default
+        setSelectedVersion(data[0].id);
+      }
+    } catch (error) {
+      console.error("Error fetching spec versions:", error);
+    }
+  };
+  
+  // Save npm config to database
+  const saveNpmConfig = async () => {
+    try {
+      // Check if we already have a config
+      if (project?.npm_configs) {
+        // Update existing config
+        const { error } = await supabase
+          .from("npm_configs")
+          .update({
+            package_name: npmConfig.package_name,
+            version: npmConfig.version,
+            description: npmConfig.description,
+            author: npmConfig.author
+          })
+          .eq("project_id", id);
+          
+        if (error) throw error;
+      } else {
+        // Create new config
+        const { error } = await supabase
+          .from("npm_configs")
+          .insert({
+            project_id: id,
+            package_name: npmConfig.package_name,
+            version: npmConfig.version,
+            description: npmConfig.description,
+            author: npmConfig.author
+          });
+          
+        if (error) throw error;
+      }
+      
+      // Update the project object
+      setProject(prev => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          npm_configs: npmConfig
+        };
+      });
+      
+      setIsConfigDialogOpen(false);
+      setSuccessMessage("NPM configuration saved successfully");
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (error) {
+      console.error("Error saving npm config:", error);
+      setError("Failed to save npm configuration");
+    }
+  };
+
   // Add function to handle spec upload
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     setError(null);
@@ -271,7 +312,6 @@ export default function ProjectDetailPage() {
       if (currentSpec) {
         setPreviousSpec(currentSpec);
         setShowDiff(true);
-        setHasUnsavedChanges(true);
       }
       
       const fileContent = await file.text();
@@ -297,32 +337,14 @@ export default function ProjectDetailPage() {
           throw new Error("Failed to parse file content");
         }
         
-        // Set the parsed object first
+        // Set the parsed object
         setSpecObj(parsedSpec);
         
-        // Update or create spec in DB
-        setUploading(true);
+        // Set the pending upload content
+        setPendingUploadContent(fileContent);
         
-        // Instead of immediately saving to DB, just update the UI with the new spec
-        if (currentSpec) {
-          // Create a new specification object but don't save to DB yet
-          setCurrentSpec({
-            ...currentSpec,
-            file_content: fileContent
-          });
-        } else {
-          // For new specs, we'll handle create when publishing
-          setCurrentSpec({
-            id: 'temp-id',
-            project_id: id as string,
-            file_content: fileContent,
-            created_at: new Date().toISOString()
-          });
-        }
-        
-        setHasUnsavedChanges(true);
-        setSuccessMessage("Specification loaded successfully. It will be saved when you publish to npm.");
-        setTimeout(() => setSuccessMessage(null), 3000);
+        // Show confirmation dialog
+        setIsConfirmUploadOpen(true);
       } catch (parseError) {
         console.error("Failed to parse file:", parseError);
         setError("Invalid API specification format. Please upload a valid OpenAPI spec in JSON or YAML format.");
@@ -333,7 +355,117 @@ export default function ProjectDetailPage() {
     } finally {
       setUploading(false);
     }
-  }, [currentSpec, id]);
+  }, [currentSpec]);
+  
+  // Function to confirm and upload a new version
+  const confirmUpload = async () => {
+    if (!pendingUploadContent) return;
+    
+    setUploading(true);
+    setError(null);
+    
+    try {
+      // First, check if we have a main specification
+      if (!currentSpec) {
+        // Create the main specification first
+        const { data: specData, error: specError } = await supabase
+          .from("specifications")
+          .insert({
+            project_id: id,
+            file_content: pendingUploadContent
+          })
+          .select()
+          .single();
+          
+        if (specError) throw specError;
+        
+        setCurrentSpec(specData);
+        
+        // Now create the first version
+        const { error: versionError } = await supabase
+          .from("spec_versions")
+          .insert({
+            project_id: id,
+            spec_id: specData.id,
+            version: "1.0.0",
+            file_content: pendingUploadContent,
+            is_published: false
+          });
+          
+        if (versionError) throw versionError;
+      } else {
+        // Create a new version of the existing spec
+        // Calculate new version number
+        const newVersion = calculateNewVersion(versions);
+        
+        const { error: versionError } = await supabase
+          .from("spec_versions")
+          .insert({
+            project_id: id,
+            spec_id: currentSpec.id,
+            version: newVersion,
+            file_content: pendingUploadContent,
+            is_published: false
+          });
+          
+        if (versionError) throw versionError;
+        
+        // Update the main specification
+        const { error: updateError } = await supabase
+          .from("specifications")
+          .update({ 
+            file_content: pendingUploadContent,
+            version: newVersion
+          })
+          .eq("id", currentSpec.id);
+          
+        if (updateError) throw updateError;
+        
+        // Update the current spec in state
+        setCurrentSpec({
+          ...currentSpec,
+          file_content: pendingUploadContent,
+          version: newVersion
+        });
+      }
+      
+      // Reset states
+      setPendingUploadContent(null);
+      setIsConfirmUploadOpen(false);
+      
+      // Refresh versions
+      fetchSpecVersions();
+      
+      // Show success message
+      setSuccessMessage("Specification uploaded successfully. The client will be generated on the server.");
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (error) {
+      console.error("Error uploading specification:", error);
+      setError(`Failed to upload specification: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setUploading(false);
+    }
+  };
+  
+  // Calculate the next version based on existing versions
+  const calculateNewVersion = (versions: SpecVersion[]): string => {
+    if (versions.length === 0) return "1.0.0";
+    
+    // Get the latest version
+    const latestVersion = versions[0].version;
+    
+    // Split into major.minor.patch
+    const parts = latestVersion.split('.').map(Number);
+    
+    // Increment patch version
+    parts[2] += 1;
+    
+    return parts.join('.');
+  };
+  
+  const toggleDiffView = () => {
+    setShowDiff(!showDiff);
+  };
   
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -345,211 +477,6 @@ export default function ProjectDetailPage() {
     maxFiles: 1,
     disabled: uploading
   });
-  
-  const toggleDiffView = () => {
-    setShowDiff(!showDiff);
-  };
-  
-  // Add a useEffect for logging the spec
-  useEffect(() => {
-    if (specObj) {
-      console.log("Spec object available for rendering:", Object.keys(specObj));
-    }
-  }, [specObj]);
-  
-  // Add client generation function
-  const generateClient = async () => {
-    if (!currentSpec) {
-      setError("No API specification available");
-      return;
-    }
-
-    if (!apiKey) {
-      setError("Gemini API key is not configured. Please set NEXT_PUBLIC_GEMINI_API_KEY in environment variables.");
-      return;
-    }
-
-    setGeneratingClient(true);
-    setError(null);
-
-    try {
-      // If we have a previous client, save it before generating a new one
-      if (generatedClient) {
-        setPreviousClient(generatedClient);
-      }
-      
-      let prompt;
-      
-      if (previousSpec && currentSpec) {
-        // If we have a previous spec, use a diff-based prompt
-        prompt = `Generate a JavaScript client library for the following OpenAPI specification.
-        The client should provide functions for all the endpoints defined in the spec.
-
-        I have a previous version of the API specification and need to update the client code
-        based on the changes.
-        
-        Here's the previous API specification:
-        ${previousSpec.file_content}
-        
-        Here's the new API specification:
-        ${currentSpec.file_content}
-        
-        Please focus on updating only the parts affected by the changes between these spec versions.
-        Format the output as JavaScript code only, with detailed comments for each function.`;
-      } else {
-        // Regular prompt for first-time generation
-        prompt = `Generate a JavaScript client library for the following OpenAPI specification. 
-        The client should provide functions for all the endpoints defined in the spec.
-        Format the output as JavaScript code only, with detailed comments for each function.
-        Here's the OpenAPI specification:
-        ${currentSpec.file_content}`;
-      }
-
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [{ text: prompt }],
-              },
-            ],
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      // Extract the generated text from the response
-      if (data.candidates && data.candidates[0]?.content?.parts?.length > 0) {
-        const generatedText = data.candidates[0].content.parts[0].text;
-        // Extract only the code part if there's any explanation
-        const codeMatch = generatedText.match(/\`\`\`(?:javascript|js)([\s\S]*?)\`\`\`/);
-        setGeneratedClient(codeMatch ? codeMatch[1].trim() : generatedText);
-        // Automatically show the client when generated
-        setShowClientDiff(true);
-      } else {
-        throw new Error("Invalid response format from the API");
-      }
-    } catch (error) {
-      console.error("Error generating client:", error);
-      setError(`Failed to generate client: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setGeneratingClient(false);
-    }
-  };
-  
-  // Add save spec function
-  const saveSpecToDb = async () => {
-    if (!currentSpec) return false;
-    
-    try {
-      if (currentSpec.id === 'temp-id') {
-        // This is a new spec, need to insert
-        const { data, error } = await supabase
-          .from("specifications")
-          .insert({
-            project_id: id,
-            file_content: currentSpec.file_content
-          })
-          .select()
-          .single();
-          
-        if (error) throw error;
-        
-        // Update with the real ID
-        setCurrentSpec(data);
-      } else {
-        // Update existing spec
-        const { error } = await supabase
-          .from("specifications")
-          .update({ file_content: currentSpec.file_content })
-          .eq("id", currentSpec.id);
-          
-        if (error) throw error;
-      }
-      
-      setHasUnsavedChanges(false);
-      return true;
-    } catch (error) {
-      console.error("Error saving specification:", error);
-      setError("Failed to save specification to database");
-      return false;
-    }
-  };
-  
-  // Add function to publish to npm
-  const handlePublishToNpm = async () => {
-    if (!generatedClient || !currentSpec) return;
-    
-    setIsPublishing(true);
-    setPublishResult(null);
-    
-    try {
-      // First save spec to DB if needed
-      if (hasUnsavedChanges) {
-        const specSaved = await saveSpecToDb();
-        if (!specSaved) {
-          throw new Error("Failed to save specification to database. Aborting package publishing.");
-        }
-      }
-      
-      // Generate package.json content
-      const packageJson = generatePackageJson({
-        name: packageName,
-        version: packageVersion,
-        description: packageDescription,
-        author: packageAuthor,
-      });
-
-      // Create FormData for API request
-      const formData = new FormData();
-      
-      // Add the package.json file
-      const packageJsonBlob = new Blob([packageJson], { type: 'application/json' });
-      formData.append('package.json', packageJsonBlob, 'package.json');
-      
-      // Add the index.js file containing the client code
-      const clientCodeBlob = new Blob([generatedClient], { type: 'application/javascript' });
-      formData.append('index.js', clientCodeBlob, 'index.js');
-      
-      // Send the request to the API endpoint
-      const response = await fetch('/api/publish-npm', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Failed to publish package');
-      }
-
-      const data = await response.json();
-      setPublishResult({
-        success: true,
-        message: data.message || 'Package published successfully',
-      });
-    } catch (error) {
-      setPublishResult({
-        success: false,
-        message: error instanceof Error ? error.message : "Unknown error occurred",
-      });
-    } finally {
-      setIsPublishing(false);
-    }
-  };
-  
-  // Basic validation for npm package
-  const isPackageValid = packageName.trim() !== "" && 
-                         packageVersion.trim() !== "" && 
-                         /^\d+\.\d+\.\d+$/.test(packageVersion.trim());
   
   // Add function to toggle edit mode
   const toggleEditMode = () => {
@@ -569,17 +496,14 @@ export default function ProjectDetailPage() {
             parsedSpec = safeParseYaml(editorContent);
           }
           
-          // Update the current spec with edited content
-          setCurrentSpec({
-            ...currentSpec,
-            file_content: editorContent
-          });
+          // Set the pending upload
+          setPendingUploadContent(editorContent);
+          
+          // Show confirmation dialog
+          setIsConfirmUploadOpen(true);
           
           // Update the parsed object
           setSpecObj(parsedSpec);
-          
-          // Mark as having unsaved changes
-          setHasUnsavedChanges(true);
         } catch (parseError) {
           console.error("Failed to parse edited content:", parseError);
           setError("Invalid API specification format. Please correct the format before saving.");
@@ -592,10 +516,98 @@ export default function ProjectDetailPage() {
     setIsEditMode(!isEditMode);
   };
   
+  // Function to view a specific version
+  const viewVersion = async (versionId: string) => {
+    // Find the version in our list
+    const version = versions.find(v => v.id === versionId);
+    if (!version) return;
+    
+    try {
+      // Parse the version content
+      let parsedSpec: Record<string, unknown>;
+      
+      if (version.file_content.trim().startsWith('{')) {
+        parsedSpec = JSON.parse(version.file_content);
+      } else {
+        parsedSpec = safeParseYaml(version.file_content);
+      }
+      
+      // Update states
+      setSpecObj(parsedSpec);
+      setSelectedVersion(versionId);
+      setShowDiff(false);
+      
+      // If we have the current version and a previous one, show diff
+      if (versionId !== versions[0].id) {
+        // Current spec is latest
+        const latestVersion = versions[0];
+        setPreviousSpec({
+          id: version.id,
+          project_id: id as string,
+          file_content: version.file_content,
+          created_at: version.created_at,
+          version: version.version
+        });
+        
+        setCurrentSpec({
+          id: latestVersion.spec_id,
+          project_id: id as string,
+          file_content: latestVersion.file_content,
+          created_at: latestVersion.created_at,
+          version: latestVersion.version
+        });
+        
+        setShowDiff(true);
+      }
+    } catch (error) {
+      console.error("Error parsing version content:", error);
+      setError("Failed to parse the version content");
+    }
+  };
+  
   // Add handler for editor content changes
   const handleEditorChange = (value: string | undefined) => {
     if (value !== undefined) {
       setEditorContent(value);
+    }
+  };
+  
+  // Handle npm config input changes
+  const handleNpmConfigChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { id, value } = e.target;
+    setNpmConfig({
+      ...npmConfig,
+      [id]: value
+    });
+  };
+  
+  // Fetch the latest client code
+  const fetchLatestClient = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("generated_clients")
+        .select("*")
+        .eq("project_id", id)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      
+      if (error) throw error;
+      
+      if (data && data.length > 0) {
+        setGeneratedClient(data[0].client_code);
+        
+        // If we have more than one, get the previous one too
+        if (data.length > 1) {
+          setPreviousClient(data[1].client_code);
+        }
+        
+        setShowClientDiff(true);
+      } else {
+        setError("No generated client found for this project. Please upload a specification first.");
+      }
+    } catch (error) {
+      console.error("Error fetching generated client:", error);
+      setError("Failed to fetch generated client");
     }
   };
   
@@ -628,9 +640,9 @@ export default function ProjectDetailPage() {
           <h1 className="text-3xl font-bold">{project?.name}</h1>
         </div>
         
-        {/* Add debug button */}
-        <Button onClick={testDirectInsert} variant="outline" className="bg-yellow-100">
-          Debug: Insert Test Spec
+        {/* NPM config button */}
+        <Button onClick={() => setIsConfigDialogOpen(true)} variant="outline">
+          NPM Configuration
         </Button>
       </div>
       
@@ -638,25 +650,6 @@ export default function ProjectDetailPage() {
       {successMessage && (
         <div className="mb-6 p-4 bg-green-100 text-green-700 rounded-lg">
           {successMessage}
-        </div>
-      )}
-      
-      {hasUnsavedChanges && (
-        <div className="mb-6 p-4 bg-yellow-100 text-yellow-700 rounded-lg flex justify-between items-center">
-          <div>
-            <p className="font-medium">You have unsaved changes to the specification</p>
-            <p className="text-sm mt-1">
-              The specification will be saved to the database when you publish the package, keeping it in sync with your npm package.
-            </p>
-          </div>
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={saveSpecToDb}
-            disabled={uploading}
-          >
-            Save to DB
-          </Button>
         </div>
       )}
       
@@ -683,13 +676,43 @@ export default function ProjectDetailPage() {
                   <p>Drop the file here...</p>
                 ) : (
                   <p className="text-sm">
-                    {currentSpec ? "Upload updated spec" : "Upload your API spec"}
+                    {currentSpec ? "Upload new version" : "Upload your API spec"}
                   </p>
                 )}
               </div>
             </div>
             
-            {previousSpec && (
+            {/* Versions list */}
+            {versions.length > 0 && (
+              <div className="mb-4">
+                <h3 className="font-medium mb-2">Specification Versions</h3>
+                <div className="max-h-48 overflow-y-auto">
+                  {versions.map((version) => (
+                    <div 
+                      key={version.id}
+                      className={`p-2 mb-1 rounded cursor-pointer ${
+                        selectedVersion === version.id 
+                          ? "bg-blue-100" 
+                          : "hover:bg-gray-100"
+                      }`}
+                      onClick={() => viewVersion(version.id)}
+                    >
+                      <div className="flex justify-between items-center">
+                        <span>v{version.version}</span>
+                        <span className="text-xs text-gray-500">
+                          {new Date(version.created_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                      {version.is_published && (
+                        <span className="text-xs text-green-600">Published</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {showDiff && (
               <div className="mb-4">
                 <Button 
                   onClick={toggleDiffView}
@@ -714,20 +737,14 @@ export default function ProjectDetailPage() {
               </div>
             )}
             
-            {/* Generate client button */}
+            {/* View latest client button */}
             {currentSpec && (
               <div className="mt-4">
                 <Button 
                   className="w-full"
-                  onClick={generateClient}
-                  disabled={generatingClient || !apiKey}
+                  onClick={fetchLatestClient}
                 >
-                  {generatingClient 
-                    ? "Generating..." 
-                    : previousClient && generatedClient
-                      ? "Regenerate API Client"
-                      : "Generate API Client"
-                  }
+                  View Latest Generated Client
                 </Button>
               </div>
             )}
@@ -744,20 +761,6 @@ export default function ProjectDetailPage() {
                 </Button>
               </div>
             )}
-            
-            {/* Add publish to npm button */}
-            {generatedClient && (
-              <div className="mt-4">
-                <Button 
-                  variant="outline"
-                  className="w-full"
-                  onClick={() => setIsPublishDialogOpen(true)}
-                  disabled={!generatedClient}
-                >
-                  {hasUnsavedChanges ? "Save & Publish to npm" : "Publish to npm"}
-                </Button>
-              </div>
-            )}
           </div>
         </div>
         
@@ -768,6 +771,11 @@ export default function ProjectDetailPage() {
               <div className="mb-4">
                 <h2 className="text-xl font-semibold">
                   Current Specification
+                  {currentSpec.version && (
+                    <span className="ml-2 text-sm bg-blue-100 text-blue-800 px-2 py-1 rounded">
+                      v{currentSpec.version}
+                    </span>
+                  )}
                   <span className="text-sm text-gray-500 ml-2">
                     Last updated: {new Date(currentSpec.created_at).toLocaleString()}
                   </span>
@@ -805,6 +813,9 @@ export default function ProjectDetailPage() {
               <div className="mb-4">
                 <h2 className="text-xl font-semibold">
                   API Specification Changes
+                  <span className="text-sm text-gray-500 ml-2">
+                    From v{previousSpec.version} to v{currentSpec.version}
+                  </span>
                 </h2>
               </div>
               
@@ -849,7 +860,7 @@ export default function ProjectDetailPage() {
           )}
           
           {/* Empty state */}
-          {!currentSpec && (
+          {!currentSpec && !versions.length && (
             <div className="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center">
               <h3 className="text-lg font-medium mb-2">No specification yet</h3>
               <p className="text-gray-600 mb-4">
@@ -870,42 +881,28 @@ export default function ProjectDetailPage() {
               </div>
             </div>
           )}
-          
-          {/* No API key warning */}
-          {!apiKey && currentSpec && (
-            <div className="mt-4 p-4 bg-yellow-100 text-yellow-700 rounded-lg">
-              Gemini API key not found. Please add NEXT_PUBLIC_GEMINI_API_KEY to your .env.local file to enable client generation.
-            </div>
-          )}
         </div>
       </div>
       
-      {/* Publish to npm dialog */}
-      {isPublishDialogOpen && (
+      {/* NPM Configuration Dialog */}
+      {isConfigDialogOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white p-6 rounded-lg shadow-lg max-w-md w-full">
-            <h2 className="text-xl font-bold mb-4">Publish to npm</h2>
-            
-            {hasUnsavedChanges && (
-              <div className="mb-4 p-3 bg-blue-50 text-blue-700 rounded-lg text-sm">
-                <p className="font-medium">Important:</p>
-                <p>Your specification changes will be saved to the database when you publish, ensuring the database and npm package stay in sync.</p>
-              </div>
-            )}
+            <h2 className="text-xl font-bold mb-4">NPM Package Configuration</h2>
             
             <p className="text-gray-600 mb-4">
-              Fill out the package details below to publish your client to npm
+              Configure the NPM package details for your API client
             </p>
 
             <div className="space-y-4">
               <div className="grid grid-cols-4 items-center gap-4">
-                <label htmlFor="packageName" className="text-sm font-medium text-right">
+                <label htmlFor="package_name" className="text-sm font-medium text-right">
                   Package Name
                 </label>
                 <input
-                  id="packageName"
-                  value={packageName}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPackageName(e.target.value)}
+                  id="package_name"
+                  value={npmConfig.package_name}
+                  onChange={handleNpmConfigChange}
                   className="col-span-3 px-3 py-2 border rounded-md w-full"
                   placeholder="my-api-client"
                   required
@@ -917,8 +914,8 @@ export default function ProjectDetailPage() {
                 </label>
                 <input
                   id="version"
-                  value={packageVersion}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPackageVersion(e.target.value)}
+                  value={npmConfig.version}
+                  onChange={handleNpmConfigChange}
                   className="col-span-3 px-3 py-2 border rounded-md w-full"
                   placeholder="1.0.0"
                   required
@@ -930,8 +927,8 @@ export default function ProjectDetailPage() {
                 </label>
                 <textarea
                   id="description"
-                  value={packageDescription}
-                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setPackageDescription(e.target.value)}
+                  value={npmConfig.description}
+                  onChange={handleNpmConfigChange}
                   className="col-span-3 px-3 py-2 border rounded-md w-full"
                   placeholder="Generated API client for my API"
                 />
@@ -942,40 +939,68 @@ export default function ProjectDetailPage() {
                 </label>
                 <input
                   id="author"
-                  value={packageAuthor}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPackageAuthor(e.target.value)}
+                  value={npmConfig.author}
+                  onChange={handleNpmConfigChange}
                   className="col-span-3 px-3 py-2 border rounded-md w-full"
                   placeholder="Your Name"
                 />
               </div>
             </div>
 
-            {publishResult && (
-              <div className={`p-4 mt-4 rounded-lg ${publishResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                <div className="flex items-center">
-                  <AlertCircle className="h-4 w-4 mr-2" />
-                  <p className="font-medium">
-                    {publishResult.success ? "Success" : "Error"}
-                  </p>
-                </div>
-                <p className="ml-6">
-                  {publishResult.message}
-                </p>
-              </div>
-            )}
-
             <div className="flex justify-end gap-2 mt-6">
               <Button 
                 variant="outline" 
-                onClick={() => setIsPublishDialogOpen(false)}
+                onClick={() => setIsConfigDialogOpen(false)}
+                disabled={!project?.npm_configs}
               >
                 Cancel
               </Button>
               <Button 
-                onClick={handlePublishToNpm}
-                disabled={!isPackageValid || isPublishing}
+                onClick={saveNpmConfig}
+                disabled={!npmConfig.package_name || !npmConfig.version}
               >
-                {isPublishing ? "Publishing..." : "Publish"}
+                Save Configuration
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Upload Confirmation Dialog */}
+      {isConfirmUploadOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-lg shadow-lg max-w-md w-full">
+            <h2 className="text-xl font-bold mb-4">Confirm Upload</h2>
+            
+            <p className="text-gray-600 mb-4">
+              Are you sure you want to upload this new specification version?
+            </p>
+            
+            <p className="text-gray-700 mb-4">
+              Once confirmed, the following will happen:
+            </p>
+            
+            <ul className="list-disc pl-6 mb-6 text-sm text-gray-600 space-y-1">
+              <li>A new version will be saved to the database</li>
+              <li>The client code will be generated on the server using AI</li>
+              <li>The npm package will be published automatically with the new version</li>
+            </ul>
+
+            <div className="flex justify-end gap-2">
+              <Button 
+                variant="outline" 
+                onClick={() => {
+                  setPendingUploadContent(null);
+                  setIsConfirmUploadOpen(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button 
+                onClick={confirmUpload}
+                disabled={uploading}
+              >
+                {uploading ? "Uploading..." : "Confirm Upload"}
               </Button>
             </div>
           </div>
