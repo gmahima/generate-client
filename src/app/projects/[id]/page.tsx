@@ -85,6 +85,10 @@ export default function ProjectDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState(false);
   
+  // Add state for editor mode
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editorContent, setEditorContent] = useState<string>("");
+  
   // Client generation states
   const [generatingClient, setGeneratingClient] = useState(false);
   const [generatedClient, setGeneratedClient] = useState<string | null>(null);
@@ -547,6 +551,54 @@ export default function ProjectDetailPage() {
                          packageVersion.trim() !== "" && 
                          /^\d+\.\d+\.\d+$/.test(packageVersion.trim());
   
+  // Add function to toggle edit mode
+  const toggleEditMode = () => {
+    if (currentSpec) {
+      if (!isEditMode) {
+        // When entering edit mode, initialize editor with current spec content
+        setEditorContent(currentSpec.file_content);
+      } else if (editorContent !== currentSpec.file_content) {
+        // When exiting edit mode with changes, update the spec
+        try {
+          // Parse the edited content to validate it
+          let parsedSpec: Record<string, unknown>;
+          
+          if (editorContent.trim().startsWith('{')) {
+            parsedSpec = JSON.parse(editorContent);
+          } else {
+            parsedSpec = safeParseYaml(editorContent);
+          }
+          
+          // Update the current spec with edited content
+          setCurrentSpec({
+            ...currentSpec,
+            file_content: editorContent
+          });
+          
+          // Update the parsed object
+          setSpecObj(parsedSpec);
+          
+          // Mark as having unsaved changes
+          setHasUnsavedChanges(true);
+        } catch (parseError) {
+          console.error("Failed to parse edited content:", parseError);
+          setError("Invalid API specification format. Please correct the format before saving.");
+          // Stay in edit mode if there's an error
+          return;
+        }
+      }
+    }
+    
+    setIsEditMode(!isEditMode);
+  };
+  
+  // Add handler for editor content changes
+  const handleEditorChange = (value: string | undefined) => {
+    if (value !== undefined) {
+      setEditorContent(value);
+    }
+  };
+  
   if (!isLoaded || loading) {
     return <div>Loading...</div>;
   }
@@ -649,6 +701,19 @@ export default function ProjectDetailPage() {
               </div>
             )}
             
+            {/* Add edit mode toggle button for when there's only one spec */}
+            {currentSpec && !previousSpec && !showClientDiff && (
+              <div className="mb-4">
+                <Button 
+                  onClick={toggleEditMode}
+                  variant="outline"
+                  className="w-full"
+                >
+                  {isEditMode ? "Save & Exit Editor" : "Edit API Spec"}
+                </Button>
+              </div>
+            )}
+            
             {/* Generate client button */}
             {currentSpec && (
               <div className="mt-4">
@@ -709,11 +774,27 @@ export default function ProjectDetailPage() {
                 </h2>
               </div>
               
-              {/* OpenAPI spec preview */}
-              {specObj && (
-                <div className="bg-white rounded-lg shadow mb-6">
-                  <SimpleApiPreview spec={specObj} />
+              {/* Show editor when in edit mode, otherwise show the preview */}
+              {isEditMode ? (
+                <div className="border rounded-lg" style={{ height: "500px" }}>
+                  <MonacoEditor
+                    height="500px"
+                    language={editorContent.trim().startsWith('{') ? "json" : "yaml"}
+                    value={editorContent}
+                    onChange={handleEditorChange}
+                    options={{
+                      minimap: { enabled: true },
+                      scrollBeyondLastLine: false,
+                    }}
+                  />
                 </div>
+              ) : (
+                /* OpenAPI spec preview */
+                specObj && (
+                  <div className="bg-white rounded-lg shadow mb-6">
+                    <SimpleApiPreview spec={specObj} />
+                  </div>
+                )
               )}
             </>
           )}
