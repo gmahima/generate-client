@@ -1,0 +1,43 @@
+name: Publish NPM Package
+
+on:
+  repository_dispatch:
+    types: [publish-npm]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          registry-url: 'https://registry.npmjs.org/'
+      
+      - name: Create package files
+        run: |
+          # Create temp directory
+          mkdir -p temp-package
+          
+          # Write package.json
+          echo '${{ github.event.client_payload.packageJson }}' > temp-package/package.json
+          
+          # Write index.js with client code
+          echo '${{ github.event.client_payload.clientCode }}' > temp-package/index.js
+          
+          # For debugging
+          echo "Package JSON:"
+          cat temp-package/package.json
+          
+          echo "Files in package:"
+          ls -la temp-package/
+      
+      - name: Publish to NPM
+        run: |
+          cd temp-package
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} 
