@@ -1,0 +1,4 @@
+{"type":"INSERT","record":{"id":"spec-id","project_id":"project-id","version":"1.0.0","file_content":"openapi: 3.0.0
+info:
+  title: Test API
+  version: 1.0.0"}}

@@ -1,0 +1,11 @@
+{
+  "imports": [
+    "https://deno.land/std@0.168.0/http/server.ts",
+    "https://esm.sh/@supabase/supabase-js@2"
+  ],
+  "env": [
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "NPM_TOKEN"
+  ]
+} 

@@ -4,17 +4,18 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 // @ts-expect-error: Deno module imports
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-// @ts-expect-error: Deno API
+
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") || "";
-// @ts-expect-error: Deno API
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
-// @ts-expect-error: Deno API
+
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 serve(async (req: Request) => {
   try {
+    console.log("Function started, parsing payload...");
     // Parse the webhook payload
     const payload = await req.json();
     
@@ -33,6 +34,8 @@ serve(async (req: Request) => {
       ({ spec_id, project_id, version, file_content } = payload);
     }
     
+    console.log("Parsed payload:", { spec_id, project_id, version });
+    
     if (!spec_id || !project_id || !file_content) {
       return new Response(
         JSON.stringify({ error: "Missing required fields" }),
@@ -47,6 +50,8 @@ serve(async (req: Request) => {
       .eq("project_id", project_id)
       .order("created_at", { ascending: false })
       .limit(1);
+    
+    console.log("Previous clients found:", previousClients?.length || 0);
     
     // Generate the prompt for AI
     let prompt;
@@ -80,6 +85,8 @@ serve(async (req: Request) => {
       ${file_content}`;
     }
     
+    console.log("Calling Gemini API...");
+    
     // Call Gemini API
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
@@ -97,6 +104,8 @@ serve(async (req: Request) => {
       throw new Error(`Gemini API error: ${response.status} ${errorText}`);
     }
     
+    console.log("Gemini API response received");
+    
     const data = await response.json();
     
     // Extract the generated code
@@ -110,7 +119,9 @@ serve(async (req: Request) => {
       throw new Error("Invalid response format from Gemini API");
     }
     
-    // Save the generated client to the database
+    console.log("Client code generated, saving to database...");
+    
+    // Save the generated client to the generated_clients table
     const { data: newClient, error: insertError } = await supabase
       .from("generated_clients")
       .insert({
@@ -125,37 +136,34 @@ serve(async (req: Request) => {
       throw insertError;
     }
     
-    // Call the publish-npm function with the generated client details
-    try {
-      await fetch(`${SUPABASE_URL}/functions/v1/publish-npm`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
-        },
-        body: JSON.stringify({
-          spec_id,
-          project_id,
-          version,
-          client_id: newClient.id
-        })
-      });
-    } catch (publishError) {
-      console.error("Failed to trigger npm publishing:", publishError);
-      // We continue anyway as the client generation was successful
+    console.log("Client saved to database, updating spec_version...");
+    
+    // Update the spec_version to mark it as ready for publishing
+    const { error: updateError } = await supabase
+      .from("spec_versions")
+      .update({ 
+        client_ready: true 
+      })
+      .eq("id", spec_id);
+    
+    if (updateError) {
+      throw updateError;
     }
+    
+    console.log("Client code saved, ready for publishing");
     
     return new Response(
       JSON.stringify({ 
         success: true, 
-        message: "Client generated successfully",
-        client_id: newClient.id
+        message: "Client generated successfully. Ready for publishing.",
+        client_id: newClient.id,
+        spec_id: spec_id
       }),
       { status: 200, headers: { "Content-Type": "application/json" } }
     );
     
   } catch (error) {
-    console.error("Error generating client:", error);
+    console.error("Error processing request:", error);
     
     return new Response(
       JSON.stringify({ 
